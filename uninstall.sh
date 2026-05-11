@@ -10,7 +10,8 @@
 set -euo pipefail
 
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-readonly REPO_DIR="${SCRIPT_DIR}/repo"
+readonly REPO_DIR="${OPENCODE_REPO_DIR:-/srv/opencode-local}"
+readonly OLD_REPO_DIR="${SCRIPT_DIR}/repo"
 readonly BUILD_DIR="${SCRIPT_DIR}/build"
 readonly PACMAN_CONF="/etc/pacman.conf"
 readonly LOCAL_REPO_NAME="opencode-local"
@@ -99,9 +100,16 @@ main() {
         fi
     fi
 
-    if [[ -d "$REPO_DIR" || -d "$BUILD_DIR" ]]; then
-        if confirm "Delete local build/ and repo/ directories"; then
-            rm -rf "$BUILD_DIR" "$REPO_DIR"
+    if [[ -d "$REPO_DIR" || -d "$BUILD_DIR" || -d "$OLD_REPO_DIR" ]]; then
+        if confirm "Delete local build/, ${REPO_DIR}, and any old ./repo/"; then
+            rm -rf "$BUILD_DIR" "$OLD_REPO_DIR"
+            if [[ -d "$REPO_DIR" ]]; then
+                if [[ "$(stat -c '%U' "$REPO_DIR")" == "$USER" && -w "$(dirname "$REPO_DIR")" ]]; then
+                    rm -rf "$REPO_DIR"
+                else
+                    sudo rm -rf "$REPO_DIR"
+                fi
+            fi
             ok "Local files removed"
         fi
     fi

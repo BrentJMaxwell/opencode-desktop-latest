@@ -3,11 +3,14 @@
 # install.sh — one-time setup for the opencode-desktop-latest local repo.
 #
 # What this does (all changes are idempotent and clearly logged):
-#   1. Adds [opencode-local] to /etc/pacman.conf pointing at ./repo
-#   2. Adds opencode-desktop-bin / -git to IgnorePkg in /etc/pacman.conf
+#   1. Creates /srv/opencode-local owned by the current user
+#      (outside $HOME so pacman's `alpm` sandbox user can read it)
+#   2. Adds [opencode-local] to /etc/pacman.conf pointing at /srv/opencode-local
+#   3. Adds opencode-desktop-bin / -git to IgnorePkg in /etc/pacman.conf
 #      (so paru/pacman never pulls from the AUR anymore)
-#   3. Runs ./update.sh to build the current upstream release into the local repo
-#   4. Prints the exact pacman command to install/upgrade
+#   4. Migrates any pre-existing ./repo/ contents from older installs
+#   5. Runs ./update.sh to build the current upstream release into the local repo
+#   6. Prints the exact pacman command to install/upgrade
 #
 # Re-running this script is safe.
 #
@@ -15,7 +18,8 @@
 set -euo pipefail
 
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-readonly REPO_DIR="${SCRIPT_DIR}/repo"
+readonly REPO_DIR="${OPENCODE_REPO_DIR:-/srv/opencode-local}"
+readonly OLD_REPO_DIR="${SCRIPT_DIR}/repo"
 readonly PACMAN_CONF="/etc/pacman.conf"
 readonly LOCAL_REPO_NAME="opencode-local"
 readonly IGNORE_PKGS=("opencode-desktop-bin" "opencode-desktop-git")
@@ -63,6 +67,62 @@ backup_pacman_conf() {
     log "Backing up $PACMAN_CONF → $backup"
     sudo cp "$PACMAN_CONF" "$backup"
     echo "$backup"
+}
+
+ensure_repo_dir() {
+    if [[ -d "$REPO_DIR" ]]; then
+        local owner
+        owner=$(stat -c '%U' "$REPO_DIR")
+        if [[ "$owner" == "$USER" ]]; then
+            skip "$REPO_DIR exists and is owned by $USER"
+            return
+        fi
+        warn "$REPO_DIR exists but is owned by $owner, not $USER"
+        if confirm "  Re-chown to $USER:$USER"; then
+            sudo chown -R "$USER:$USER" "$REPO_DIR"
+            ok "Ownership fixed"
+        fi
+        return
+    fi
+
+    log "Creating $REPO_DIR (outside \$HOME so pacman's alpm user can read it)"
+    sudo mkdir -p "$REPO_DIR"
+    sudo chown "$USER:$USER" "$REPO_DIR"
+    sudo chmod 755 "$REPO_DIR"
+    ok "$REPO_DIR ready"
+}
+
+migrate_old_repo_if_present() {
+    shopt -s nullglob
+    local old_pkgs=("${OLD_REPO_DIR}/"*.pkg.tar.zst)
+    local old_dbs=("${OLD_REPO_DIR}/${LOCAL_REPO_NAME}".*)
+    shopt -u nullglob
+
+    if [[ ${#old_pkgs[@]} -eq 0 && ${#old_dbs[@]} -eq 0 ]]; then
+        return
+    fi
+
+    log "Migrating ${#old_pkgs[@]} package(s) + db files from ${OLD_REPO_DIR} → ${REPO_DIR}"
+    for f in "${old_pkgs[@]}" "${old_dbs[@]}"; do
+        [[ -e "$f" ]] || continue
+        mv -n "$f" "$REPO_DIR/" 2>/dev/null || {
+            sudo mv -n "$f" "$REPO_DIR/" && sudo chown "$USER:$USER" "$REPO_DIR/$(basename "$f")"
+        }
+    done
+    if [[ -d "$OLD_REPO_DIR" ]] && [[ -z "$(ls -A "$OLD_REPO_DIR" 2>/dev/null)" ]]; then
+        rmdir "$OLD_REPO_DIR"
+        ok "Removed empty $OLD_REPO_DIR"
+    fi
+    ok "Migration complete"
+}
+
+fix_stale_server_url() {
+    if ! grep -qE "^Server[[:space:]]*=[[:space:]]*file://${OLD_REPO_DIR}" "$PACMAN_CONF"; then
+        return
+    fi
+    log "Updating stale Server URL in $PACMAN_CONF: ${OLD_REPO_DIR} → ${REPO_DIR}"
+    sudo sed -i -E "s|^(Server[[:space:]]*=[[:space:]]*file://)${OLD_REPO_DIR//\//\\/}.*$|\1${REPO_DIR}|" "$PACMAN_CONF"
+    ok "Server URL updated"
 }
 
 ensure_ignorepkg_entries() {
@@ -150,9 +210,14 @@ main() {
     assert_arch_linux
     assert_not_root
 
-    echo "This will modify $PACMAN_CONF:"
-    echo "  • Add [${LOCAL_REPO_NAME}] repository → file://${REPO_DIR}"
-    echo "  • Add to IgnorePkg: ${IGNORE_PKGS[*]}"
+    echo "This will:"
+    echo "  • Create ${REPO_DIR} (owned by $USER)"
+    echo "  • Modify $PACMAN_CONF:"
+    echo "      - Add [${LOCAL_REPO_NAME}] repository → file://${REPO_DIR}"
+    echo "      - Add to IgnorePkg: ${IGNORE_PKGS[*]}"
+    if [[ -d "$OLD_REPO_DIR" ]] && ls "$OLD_REPO_DIR"/*.pkg.tar.zst >/dev/null 2>&1; then
+        echo "  • Migrate existing packages from ${OLD_REPO_DIR} → ${REPO_DIR}"
+    fi
     echo
     if ! confirm "Proceed"; then
         echo "Aborted."
@@ -160,8 +225,11 @@ main() {
     fi
 
     backup_pacman_conf >/dev/null
+    ensure_repo_dir
+    migrate_old_repo_if_present
     ensure_ignorepkg_entries
     ensure_local_repo_section
+    fix_stale_server_url
     build_initial_package
     remove_aur_package_if_installed
     print_next_steps

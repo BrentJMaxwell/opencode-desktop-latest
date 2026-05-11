@@ -24,7 +24,7 @@ readonly REQUIRED_CMDS=(curl makepkg repo-add bsdtar sha256sum sed grep flock)
 
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly PKGBUILD_PATH="${SCRIPT_DIR}/PKGBUILD"
-readonly REPO_DIR="${SCRIPT_DIR}/repo"
+readonly REPO_DIR="${OPENCODE_REPO_DIR:-/srv/opencode-local}"
 readonly BUILD_DIR="${SCRIPT_DIR}/build"
 readonly SRC_CACHE="${BUILD_DIR}/src-cache"
 readonly LOCK_FILE="/tmp/opencode-desktop-latest.lock"

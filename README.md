@@ -13,36 +13,55 @@ GitHub release  ─►  ./update.sh  ─►  ./repo/*.pkg.tar.zst  ─►  pacma
 ## How it works
 
 ```
-opencode-desktop-latest/
-├── PKGBUILD            # Repackages upstream's .deb as an Arch package   ─┐
-├── update.sh           # Queries GitHub → bumps PKGBUILD → makepkg        │
-├── install.sh          # One-time: adds [opencode-local] to pacman.conf   │  ~32 KB
-├── uninstall.sh        # Reverses install.sh                              │  tracked
-├── README.md                                                              │  in git
-├── .gitignore                                                            ─┘
-│
-├── repo/               # The local pacman repo (gitignored, ~115 MB)
-│   ├── opencode-local.db.tar.gz
-│   └── opencode-desktop-X.Y.Z-1-x86_64.pkg.tar.zst
-└── build/              # makepkg workspace (gitignored, ~600 MB)
+~/git/opencode-desktop-latest/        ← git-tracked source (~32 KB)
+├── PKGBUILD                # Repackages upstream's .deb as an Arch package
+├── update.sh               # Queries GitHub → bumps PKGBUILD → makepkg
+├── install.sh              # One-time: creates /srv/opencode-local + pacman.conf entries
+├── uninstall.sh            # Reverses install.sh
+├── README.md
+├── .gitignore
+└── build/                  # makepkg workspace (gitignored, ~600 MB)
+
+/srv/opencode-local/                  ← built artifacts, alpm-readable (not in git)
+├── opencode-local.db.tar.gz
+└── opencode-desktop-X.Y.Z-1-x86_64.pkg.tar.zst
 ```
 
-The PKGBUILD doesn't compile anything — it extracts upstream's pre-built `.deb` (which is what the AUR `-bin` package does too) and lays the files into `$pkgdir`. Build takes seconds.
+### Why `/srv/opencode-local/` instead of `./repo/`
 
-The local pacman repo is registered in `/etc/pacman.conf` via `Server = file://...`, so `pacman -Syu` and `paru` treat it like any other repo.
+Pacman 6.1+ runs downloads as the unprivileged **`alpm` system user** by default (`DownloadUser = alpm` in `/etc/pacman.conf`). This user can't traverse `/home/<you>` (mode 700 on Arch), so a local repo under `~/git/` fails with:
+
+```
+error: failed retrieving file 'opencode-local.db' from disk
+       : Could not open file /home/<you>/.../opencode-local.db
+```
+
+Hosting the built packages at `/srv/opencode-local/` (FHS-blessed path for served data, world-traversable by default) sidesteps the problem cleanly with no permission hacks.
+
+### The PKGBUILD
+
+It doesn't compile anything — it extracts upstream's pre-built `.deb` (same as the AUR `-bin` package) and lays the files into `$pkgdir`. Build takes seconds.
+
+### Override the repo path
+
+If you really want the repo somewhere else, set `OPENCODE_REPO_DIR` in your environment before running `install.sh` / `update.sh`. The default (`/srv/opencode-local`) is recommended.
 
 ## Cross-machine setup
 
-The whole repo is only **~32 KB** of source — `.gitignore` already excludes the heavyweight `build/` and `repo/` directories (~726 MB combined). Cloning is fast and lightweight.
+The whole repo is only **~32 KB** of source — all the heavyweight artifacts live in `/srv/opencode-local/` (built by `update.sh`) and `~/git/opencode-desktop-latest/build/` (makepkg workspace), both gitignored. Cloning is fast.
 
 ```bash
 git clone git@github-personal:BrentJMaxwell/opencode-desktop-latest.git ~/git/opencode-desktop-latest
 cd ~/git/opencode-desktop-latest
-./install.sh
+./install.sh                # creates /srv/opencode-local/, updates pacman.conf
 sudo pacman -Syu
 ```
 
 > The `github-personal` SSH alias is defined in `~/.ssh/config` and forces use of `~/.ssh/id_ed25519_personal`. On a fresh machine, make sure that key is present and the corresponding public key is registered on the `BrentJMaxwell` GitHub account.
+
+### Migrating from an older install
+
+If you have an existing install with the repo at `~/git/opencode-desktop-latest/repo/`, just run `./install.sh` again. It detects the old layout, moves the packages to `/srv/opencode-local/`, and updates the `Server = file://...` line in `/etc/pacman.conf` automatically.
 
 Each machine builds its own `.pkg.tar.zst` into its own local `./repo/` — the built artifacts are **not** shared via git because:
 - The `sha256sum` in `PKGBUILD` is portable (it's the hash of upstream's `.deb`, identical on every machine)
