@@ -1,0 +1,7 @@
+build/
+repo/
+*.pkg.tar.zst
+*.pkg.tar.zst.sig
+*.log
+src/
+pkg/
